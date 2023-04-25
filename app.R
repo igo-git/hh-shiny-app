@@ -183,8 +183,6 @@ getVacancies <- function(professional_role){
         skills <- data.frame()
         for (url in vacancies_urls) {
             req <- request(url)
-            # req %>%
-            #     req_perform() -> resp
             resp <- try(
                 req %>%
                     req_perform()
@@ -201,7 +199,8 @@ getVacancies <- function(professional_role){
             # Если максимальная зарплата не указана, принимаем ее равной минимальной и наоборот
             vacancy$salary_to <- ifelse(is.null(vacancy$salary_to), vacancy$salary_from, vacancy$salary_to)
             vacancy$salary_from <- ifelse(is.null(vacancy$salary_from), vacancy$salary_to, vacancy$salary_from)
-            if (length(vacancy < 9)) {
+            if (length(vacancy) < 9 | any(sapply(vacancy, is.null))) {
+                # Если не заполнены нужные нам поля, пропускаем вакансию
                 next
             }
             if (length(vacancies) != 0) {
@@ -213,17 +212,14 @@ getVacancies <- function(professional_role){
                 jq(". | {key_skills} | .[]") %>%
                 fromJSON()
             if (length(cur_skills) != 0) {
-                cur_skills$id <- data %>%
-                    jq(". | {id}") %>%
-                    fromJSON() %>%
-                    unlist()
+                cur_skills$id <- vacancy$id
                 if (length(skills) != 0) {
                     skills <- rbind(skills, cur_skills)
                 } else {
                     skills <- cur_skills
                 }
             }
-            Sys.sleep(0.25)
+            Sys.sleep(0.5)
         }
         if (nrow(vacancies) == 0) {
             return(NULL)
@@ -244,6 +240,28 @@ getVacancies <- function(professional_role){
     # Преобразуем опыт работы в упорядоченный фактор
     vacancies$experience <- factor(vacancies$experience, labels = c("Нет опыта", "От 1 года до 3 лет", "От 3 до 6 лет", "Более 6 лет"), ordered = TRUE)
     return(list(vacancies = vacancies, skills = skills))
+}
+
+# Получение названия профессии по id
+getProfessionalRoleName <- function(pr) {
+  names(professional_roles_list[professional_roles_list == pr])
+}
+
+# Получение из кэша сводного датафрейма по всем профессиям
+getSummaryDf <- function() {
+    res <- data.frame()
+    for (pr in str_extract(list.files("./data/", "vacancies_\\d{2,3}.csv"), "\\d{2,3}")) {
+        df <- getVacancies(pr)[["vacancies"]]
+        df_row <- data.frame(professional_role = getProfessionalRoleName(pr),
+                          salary = median((df$salary_from + df$salary_to) / 2),
+                          vacancy_count = nrow(df))
+        if (nrow(res) == 0) {
+            res <- df_row
+        } else {
+            res <- rbind(res, df_row)
+        }
+    }
+    res
 }
 
 ui <- fluidPage(
@@ -270,14 +288,14 @@ ui <- fluidPage(
             # Создание вкладок на главной панели
             tabsetPanel(type = "tabs",
                 tabPanel("Востребованность",
-                    textOutput("count"),
+                    h4(textOutput("count")),
                     # Output: График распределения ----
                     plotOutput("vacancy_skillsPlot"),
                     br(),
                     plotOutput("vacancy_experiencePlot")
                 ),
                 tabPanel("Зарплаты",
-                    textOutput("salary"),
+                    h4(textOutput("salary")),
                     plotOutput("salary_skillsPlot"),
                     br(),
                     plotOutput("salary_experiencyPlot"),
@@ -288,6 +306,11 @@ ui <- fluidPage(
                     plotOutput("vacancies_cities"),
                     br(),
                     plotOutput("salary_cities")
+                ),
+                tabPanel("Сводные данные",
+                    plotOutput("vacancies_summary"),
+                    br(),
+                    plotOutput("salary_summary")
                 ),
                 tabPanel("Данные",
                     dataTableOutput("dataset")
@@ -426,6 +449,20 @@ server <- function(input, output) {
                         ylab("Город")
             }
         }
+    })
+    output$vacancies_summary <- renderPlot({
+        getSummaryDf() %>%
+            ggplot(aes(x = vacancy_count, y = fct_reorder(professional_role, vacancy_count))) +
+                geom_col(fill = "deepskyblue") +
+                xlab("Количество вакансий") +
+                ylab("Профессия")
+    })
+    output$salary_summary <- renderPlot({
+        getSummaryDf() %>%
+            ggplot(aes(x = salary, y = fct_reorder(professional_role, salary))) +
+                geom_col(fill = "deepskyblue") +
+                xlab("Медианная зарплата") +
+                ylab("Профессия")
     })
     output$dataset <- renderDataTable(VacanciesSkills()[["vacancies"]])
     output$text <- renderText({
